@@ -13,13 +13,211 @@ use PhpMimeMailParser\Exception;
  */
 class ParserTest extends \PHPUnit_Framework_TestCase
 {
+
+    /**
+     * @dataProvider provideData
+     */
+    public function testInlineAttachmentsFalse(
+        $mid,
+        $subjectExpected,
+        $fromAddressesExpected,
+        $fromExpected,
+        $toAddressesExpected,
+        $toExpected,
+        $textExpected,
+        $htmlExpected,
+        $attachmentsExpected,
+        $countEmbeddedExpected
+    ) {
+        //Init
+        $file = __DIR__.'/mails/'.$mid;
+
+        //Load From Path
+        $Parser = new Parser();
+        $Parser->setPath($file);
+
+        // Remove inline attachments from array
+        $attachmentsExpected = array_filter($attachmentsExpected, function ($attachment) {
+            return ($attachment[5] != 'inline');
+        });
+
+        //Test Nb Attachments (ignoring inline attachments)
+        $attachments = $Parser->getAttachments(false);
+        $this->assertEquals(count($attachmentsExpected), count($attachments));
+        $iterAttachments = 0;
+
+        //Test Attachments
+        if (count($attachmentsExpected) > 0) {
+            foreach ($attachmentsExpected as $attachmentExpected) {
+                //Test Filename Attachment
+                $this->assertEquals($attachmentExpected[0], $attachments[$iterAttachments]->getFilename());
+
+                //Test ContentType Attachment
+                $this->assertEquals($attachmentExpected[4], $attachments[$iterAttachments]->getContentType());
+
+                //Test ContentDisposition Attachment
+                $this->assertEquals($attachmentExpected[5], $attachments[$iterAttachments]->getContentDisposition());
+
+                //Test md5 of Headers Attachment
+                $this->assertEquals(
+                    $attachmentExpected[6],
+                    md5(serialize($attachments[$iterAttachments]->getHeaders()))
+                );
+
+                $iterAttachments++;
+            }
+        }
+    }
+
+    /**
+     * test for being able to extract multiple inline text/plain & text/html parts
+     * related to issue #163
+     *
+     * @return return type
+     */
+    public function testMultiPartInline()
+    {
+        $file = __DIR__ .'/mails/issue163';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+        $inline_parts = $Parser->getInlineParts('text');
+        $this->assertEquals(is_array($inline_parts), true);
+        $this->assertEquals(count($inline_parts), 2);
+        $this->assertEquals($inline_parts[0], "First we have a text block, then we insert an image:\r\n\r\n");
+        $this->assertEquals($inline_parts[1], "\r\n\r\nThen we have more text\r\n\r\n-- sent from my phone.");
+    }
+
+    public function testIlligalAttachmentFilenameForDispositionFilename()
+    {
+        $file = __DIR__ . '/mails/issue133';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+        $attachments = $Parser->getAttachments(false);
+
+        $this->assertEquals("attach_01", $attachments[0]->getFilename());
+    }
+
+    /**
+     * Test for being able to extract a text/plain part from an email with 10 attachments.
+     * Related to pr #172.
+     *
+     * @return void
+     */
+    public function testMultiPartWithAttachments()
+    {
+        $file = __DIR__ .'/mails/m0028';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+        $body = $Parser->getMessageBody('text');
+        $this->assertEquals(is_string($body), true);
+        $this->assertEquals($body, "This is the plain text content of the email");
+    }
+
+    public function testIlligalAttachmentFilenameForContentName()
+    {
+        $file = __DIR__ . '/mails/m0027';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+        $attachments = $Parser->getAttachments(false);
+
+        $this->assertEquals("1234_.._.._1234.txt", $attachments[0]->getFilename());
+    }
+
+    public function testAttachmentsWithDuplicatesSuffix()
+    {
+        $file = __DIR__ . '/mails/m0026';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+
+        $attachDir = __DIR__ . '/mails/m0026_attachments/';
+        $Parser->saveAttachments($attachDir, false);
+
+        $attachmentFiles = glob($attachDir . 'ATT*');
+
+        // Clean up attachments dir
+        array_map('unlink', $attachmentFiles);
+        rmdir($attachDir);
+
+        // Default: generate filename suffix, so we should have two files
+        $this->assertEquals(2, count($attachmentFiles));
+    }
+
+    public function testAttachmentsWithDuplicatesRandom()
+    {
+        $file = __DIR__ . '/mails/m0026';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+
+        $attachDir = __DIR__ . '/mails/m0026_attachments/';
+        $Parser->saveAttachments($attachDir, false, Parser::ATTACHMENT_RANDOM_FILENAME);
+
+        $attachmentFiles = glob($attachDir . '*');
+
+        // Clean up attachments dir
+        array_map('unlink', $attachmentFiles);
+        rmdir($attachDir);
+
+        // Default: generate random filename, so we should have two files
+        $this->assertEquals(2, count($attachmentFiles));
+    }
+
+    public function testMultipleContentTransferEncodingHeader()
+    {
+        $file = __DIR__.'/mails/issue126';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+        $Parser->getMessageBody('text');
+    }
+
     public function testCreatingMoreThanOneInstanceOfParser()
     {
         $file = __DIR__.'/mails/issue84';
         (new Parser())->setPath($file)->getMessageBody();
         (new Parser())->setPath($file)->getMessageBody();
     }
-    
+
+    public function testDecodeCharsetFailedIsIgnored()
+    {
+        if (version_compare(PHP_VERSION, '7.0.0') >= 0) {
+            $file = __DIR__ . '/mails/issue116';
+            $Parser = new Parser();
+            $Parser->setText(file_get_contents($file));
+            $this->assertEquals("ЖД41 от 28.09.2016", $Parser->getHeader('subject'));
+        }
+    }
+
+    public function testEmbeddedDataReturnTheFirstContentWhenContentIdIsNotUnique()
+    {
+        $file = __DIR__ . '/mails/issue115';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+        $this->assertEquals(1, substr_count($Parser->getMessageBody('htmlEmbedded'), 'image/'));
+    }
+
+    public function testGetAddressesWithQuot()
+    {
+        $file = __DIR__ . '/mails/m0124';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+        $from = $Parser->getAddresses('from');
+        $this->assertEquals([
+            [
+                "display" => 'ФГУП "СибНИА им.С.А.Чаплыгина""',
+                "address" => 'user@domain.ru',
+                "is_group" => false
+            ]
+            ], $from);
+    }
+
+    public function testGetMessageBodyNotFound()
+    {
+        $file = __DIR__ . '/mails/m0124';
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+        $body = $Parser->getMessageBody();
+        $this->assertEmpty($body);
+    }
+
     public function provideData()
     {
 
@@ -554,28 +752,7 @@ class ParserTest extends \PHPUnit_Framework_TestCase
                     'me@somewhere.com',
                     array('COUNT',1,'Hi,'),
                     array('COUNT',1,'<strong>*How The Sale Works</strong>'),
-                    array(
-                        array(
-                            'noname1',
-                            2616,
-                            '$150+ of Multivitamins',
-                            1,
-                            'text/plain',
-                            'inline',
-                            '87caaaf9bf1d7ebc2769254710c38a0d',
-                            '',
-                            ),
-                        array(
-                            'noname2',
-                            17341,
-                            'div',
-                            82,
-                            'text/html',
-                            'inline',
-                            'b70ff760112a71009d8295c34fd67d9b',
-                            '',
-                            )
-                        ),
+                    array(),
                     0),
                 array(
                     'm0016',
@@ -714,7 +891,7 @@ class ParserTest extends \PHPUnit_Framework_TestCase
                     0),
                 array(
                     'm0021',
-                    'occurs when divided into an array, and the last e of the array! Пут ін хуйло!!!!!!',
+                    'occurs when divided into an array, and the last e of the array! Путін хуйло!!!!!!',
                     array(
                         array(
                             'display' => 'mail@exemple.com',
@@ -880,6 +1057,40 @@ class ParserTest extends \PHPUnit_Framework_TestCase
                             )
                         ),
                     2),
+                array(
+                    'issue149',
+                    "מענה 'אני לא נמצא': Invoice 02722027",
+                    array(
+                        array(
+                            'display' => 'Name',
+                            'address' => 'name@company.com',
+                            'is_group' => false
+                            )
+                    ),
+                    'Name <name@company.com>',
+                    array(
+                        array(
+                            'display' => 'name@company2.com',
+                            'address' => 'name@company2.com',
+                            'is_group' => false
+                            )
+                    ),
+                    'name@company2.com',
+                    array('MATCH',"\n"),
+                    array('COUNT',1,'<div dir="ltr"><br></div>'),
+                    array(
+                        array(
+                            'attach01',
+                            2,
+                            'a',
+                            1,
+                            'application/octet-stream',
+                            'attachment',
+                            '04c1d5793efa97c956d011a8b3309f05',
+                            '',
+                            )
+                        ),
+                    0),
                 );
         return $data;
     }
@@ -924,6 +1135,9 @@ class ParserTest extends \PHPUnit_Framework_TestCase
         //Test Invalid Header
         $this->assertFalse($Parser->getHeader('azerty'));
         $this->assertArrayNotHasKey('azerty', $Parser->getHeaders());
+
+        //Test Raw Headers
+        $this->assertInternalType('string', $Parser->getHeadersRaw());
 
         //Test  Body : text
         if ($textExpected[0] == 'COUNT') {
@@ -1055,6 +1269,9 @@ class ParserTest extends \PHPUnit_Framework_TestCase
         //Test Invalid Header
         $this->assertFalse($Parser->getHeader('azerty'));
         $this->assertArrayNotHasKey('azerty', $Parser->getHeaders());
+
+        //Test Raw Headers
+        $this->assertInternalType('string', $Parser->getHeadersRaw());
 
         //Test  Body : text
         if ($textExpected[0] == 'COUNT') {
@@ -1188,6 +1405,9 @@ class ParserTest extends \PHPUnit_Framework_TestCase
         $this->assertFalse($Parser->getHeader('azerty'));
         $this->assertArrayNotHasKey('azerty', $Parser->getHeaders());
 
+        //Test Raw Headers
+        $this->assertInternalType('string', $Parser->getHeadersRaw());
+
         //Test  Body : text
         if ($textExpected[0] == 'COUNT') {
             $this->assertEquals($textExpected[1], substr_count($Parser->getMessageBody('text'), $textExpected[2]));
@@ -1276,5 +1496,209 @@ class ParserTest extends \PHPUnit_Framework_TestCase
                 $this->assertEquals(1, substr_count($htmlEmbedded, $itemExpected));
             }
         }
+    }
+
+    public function testHeaderRetrievalIsCaseInsensitive()
+    {
+        //Init
+        $file = __DIR__.'/mails/m0001';
+
+        //Load From Path
+        $Parser = new Parser();
+        $Parser->setPath($file);
+
+        $this->assertEquals($Parser->getRawHeader('From'), $Parser->getRawHeader('from'));
+        $this->assertEquals($Parser->getHeader('From'), $Parser->getHeader('from'));
+        $this->assertEquals($Parser->getAddresses('To'), $Parser->getAddresses('to'));
+    }
+
+
+    public function provideAttachmentsData()
+    {
+        return array(
+            array(
+                'm0001',
+                array(
+                    'Content-Type: application/octet-stream; name=attach01
+Content-Disposition: attachment; filename=attach01
+Content-Transfer-Encoding: base64
+X-Attachment-Id: f_hi0eudw60
+
+YQo='
+                )
+            ),
+            array(
+                'm0002',
+                array(
+                    'Content-Type: application/octet-stream; name=attach02
+Content-Disposition: attachment; filename=attach02
+Content-Transfer-Encoding: base64
+X-Attachment-Id: f_hi0eyes30
+
+TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBpc2NpbmcgZWxpdC4g
+VmVzdGlidWx1bSBjb25ndWUgc2VkIGFudGUgaWQgbGFvcmVldC4gUHJhZXNlbnQgZGljdHVtIHNh
+cGllbiBpYWN1bGlzIG5pc2kgcGhhcmV0cmEsIHBvcnR0aXRvciBibGFuZGl0IG1hc3NhIGN1cnN1
+cy4gRHVpcyByaG9uY3VzIG1hdXJpcyBhYyB1cm5hIHNlbXBlciwgc2VkIG1hbGVzdWFkYSBmZWxp
+cyBpbnRlcmR1bS4gTG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBp
+c2NpbmcgZWxpdC4gU2VkIHB1bHZpbmFyIGRpY3R1bSBvcm5hcmUuIEN1cmFiaXR1ciBldSBkb2xv
+ciBmYWNpbGlzaXMsIHNhZ2l0dGlzIHB1cnVzIHByZXRpdW0sIGNvbnNlY3RldHVyIGVsaXQuIE51
+bGxhIGVsZW1lbnR1bSBhdWN0b3IgdWx0cmljZXMuIE51bmMgZmVybWVudHVtIGRpY3R1bSBvZGlv
+IHZlbCB0aW5jaWR1bnQuIFNlZCBjb25zZXF1YXQgdmVzdGlidWx1bSB2ZXN0aWJ1bHVtLiBQcm9p
+biBwdWx2aW5hciBmZWxpcyB2aXRhZSBlbGVtZW50dW0gc3VzY2lwaXQuCgoKTG9yZW0gaXBzdW0g
+ZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBpc2NpbmcgZWxpdC4gVmVzdGlidWx1bSBj
+b25ndWUgc2VkIGFudGUgaWQgbGFvcmVldC4gUHJhZXNlbnQgZGljdHVtIHNhcGllbiBpYWN1bGlz
+IG5pc2kgcGhhcmV0cmEsIHBvcnR0aXRvciBibGFuZGl0IG1hc3NhIGN1cnN1cy4gRHVpcyByaG9u
+Y3VzIG1hdXJpcyBhYyB1cm5hIHNlbXBlciwgc2VkIG1hbGVzdWFkYSBmZWxpcyBpbnRlcmR1bS4g
+TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBpc2NpbmcgZWxpdC4g
+U2VkIHB1bHZpbmFyIGRpY3R1bSBvcm5hcmUuIEN1cmFiaXR1ciBldSBkb2xvciBmYWNpbGlzaXMs
+IHNhZ2l0dGlzIHB1cnVzIHByZXRpdW0sIGNvbnNlY3RldHVyIGVsaXQuIE51bGxhIGVsZW1lbnR1
+bSBhdWN0b3IgdWx0cmljZXMuIE51bmMgZmVybWVudHVtIGRpY3R1bSBvZGlvIHZlbCB0aW5jaWR1
+bnQuIFNlZCBjb25zZXF1YXQgdmVzdGlidWx1bSB2ZXN0aWJ1bHVtLiBQcm9pbiBwdWx2aW5hciBm
+ZWxpcyB2aXRhZSBlbGVtZW50dW0gc3VzY2lwaXQuCgoKTG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFt
+ZXQsIGNvbnNlY3RldHVyIGFkaXBpc2NpbmcgZWxpdC4gVmVzdGlidWx1bSBjb25ndWUgc2VkIGFu
+dGUgaWQgbGFvcmVldC4gUHJhZXNlbnQgZGljdHVtIHNhcGllbiBpYWN1bGlzIG5pc2kgcGhhcmV0
+cmEsIHBvcnR0aXRvciBibGFuZGl0IG1hc3NhIGN1cnN1cy4gRHVpcyByaG9uY3VzIG1hdXJpcyBh
+YyB1cm5hIHNlbXBlciwgc2VkIG1hbGVzdWFkYSBmZWxpcyBpbnRlcmR1bS4gTG9yZW0gaXBzdW0g
+ZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBpc2NpbmcgZWxpdC4gU2VkIHB1bHZpbmFy
+IGRpY3R1bSBvcm5hcmUuIEN1cmFiaXR1ciBldSBkb2xvciBmYWNpbGlzaXMsIHNhZ2l0dGlzIHB1
+cnVzIHByZXRpdW0sIGNvbnNlY3RldHVyIGVsaXQuIE51bGxhIGVsZW1lbnR1bSBhdWN0b3IgdWx0
+cmljZXMuIE51bmMgZmVybWVudHVtIGRpY3R1bSBvZGlvIHZlbCB0aW5jaWR1bnQuIFNlZCBjb25z
+ZXF1YXQgdmVzdGlidWx1bSB2ZXN0aWJ1bHVtLiBQcm9pbiBwdWx2aW5hciBmZWxpcyB2aXRhZSBl
+bGVtZW50dW0gc3VzY2lwaXQuCgpMb3JlbSBpcHN1bSBkb2xvciBzaXQgYW1ldCwgY29uc2VjdGV0
+dXIgYWRpcGlzY2luZyBlbGl0LiBWZXN0aWJ1bHVtIGNvbmd1ZSBzZWQgYW50ZSBpZCBsYW9yZWV0
+LiBQcmFlc2VudCBkaWN0dW0gc2FwaWVuIGlhY3VsaXMgbmlzaSBwaGFyZXRyYSwgcG9ydHRpdG9y
+IGJsYW5kaXQgbWFzc2EgY3Vyc3VzLiBEdWlzIHJob25jdXMgbWF1cmlzIGFjIHVybmEgc2VtcGVy
+LCBzZWQgbWFsZXN1YWRhIGZlbGlzIGludGVyZHVtLiBMb3JlbSBpcHN1bSBkb2xvciBzaXQgYW1l
+dCwgY29uc2VjdGV0dXIgYWRpcGlzY2luZyBlbGl0LiBTZWQgcHVsdmluYXIgZGljdHVtIG9ybmFy
+ZS4gQ3VyYWJpdHVyIGV1IGRvbG9yIGZhY2lsaXNpcywgc2FnaXR0aXMgcHVydXMgcHJldGl1bSwg
+Y29uc2VjdGV0dXIgZWxpdC4gTnVsbGEgZWxlbWVudHVtIGF1Y3RvciB1bHRyaWNlcy4gTnVuYyBm
+ZXJtZW50dW0gZGljdHVtIG9kaW8gdmVsIHRpbmNpZHVudC4gU2VkIGNvbnNlcXVhdCB2ZXN0aWJ1
+bHVtIHZlc3RpYnVsdW0uIFByb2luIHB1bHZpbmFyIGZlbGlzIHZpdGFlIGVsZW1lbnR1bSBzdXNj
+aXBpdC4K'
+                )
+            )
+        );
+    }
+
+    /**
+     * @dataProvider provideAttachmentsData
+     */
+    public function testAttachmentGetMimePartStrFromPath($mid, $attachmentMimeParts)
+    {
+        // Init
+        $file = __DIR__ . '/mails/' . $mid;
+
+        $Parser = new Parser();
+        $Parser->setPath($file);
+
+        $i = 0;
+        foreach ($Parser->getAttachments() as $attachment) {
+            $expectedMimePart = $attachmentMimeParts[$i];
+            $this->assertEquals($expectedMimePart, $attachment->getMimePartStr());
+            $i++;
+        }
+    }
+
+    /**
+     * @dataProvider provideAttachmentsData
+     */
+    public function testAttachmentGetMimePartStrFromStream($mid, $attachmentMimeParts)
+    {
+        // Init
+        $file = __DIR__ . '/mails/' . $mid;
+
+        $Parser = new Parser();
+        $Parser->setStream(fopen($file, 'r'));
+
+        $i = 0;
+        foreach ($Parser->getAttachments() as $attachment) {
+            $expectedMimePart = $attachmentMimeParts[$i];
+            $this->assertEquals($expectedMimePart, $attachment->getMimePartStr());
+            $i++;
+        }
+    }
+
+    /**
+     * @dataProvider provideAttachmentsData
+     */
+    public function testAttachmentGetMimePartStrFromText($mid, $attachmentMimeParts)
+    {
+        // Init
+        $file = __DIR__ . '/mails/' . $mid;
+
+        $Parser = new Parser();
+        $Parser->setText(file_get_contents($file));
+
+        $i = 0;
+        foreach ($Parser->getAttachments() as $attachment) {
+            $expectedMimePart = $attachmentMimeParts[$i];
+            $this->assertEquals($expectedMimePart, $attachment->getMimePartStr());
+            $i++;
+        }
+    }
+
+    /**
+     * @dataProvider providerRFC822AttachmentsWithDifferentTextTypes
+     *
+     * @param string $file Mail file path to parse
+     * @param string $getType The type to give to getMessageBody
+     * @param string $expected
+     */
+    public function testRFC822AttachmentPartsShouldNotBeIncludedInGetMessageBody($file, $getType, $expected)
+    {
+        $Parser = new Parser();
+        $Parser->setPath($file);
+        $this->assertEquals($expected, $Parser->getMessageBody($getType));
+    }
+
+    public function providerRFC822AttachmentsWithDifferentTextTypes()
+    {
+        return [
+            'HTML-only message, with text-only RFC822 attachment, message should have empty text body' => [
+                __DIR__.'/mails/issue158a',
+                'text',
+                ''
+            ],
+            'HTML-only message, with text-only RFC822 attachment, message should have HTML body' => [
+                __DIR__.'/mails/issue158a',
+                'html',
+                "<html><body>An RFC 822 forward with a <em>HTML</em> body</body></html>\n"
+            ],
+            'Text-only message, with HTML-only RFC822 attachment, message should have empty HTML body' => [
+                __DIR__.'/mails/issue158b',
+                'html',
+                ''
+            ],
+            'Text-only message, with HTML-only RFC822 attachment, message should have text body' => [
+                __DIR__.'/mails/issue158b',
+                'text',
+                "A text/plain response to an REC822 message, with content filler to get it past the
+200 character lower-limit in order to avoid preferring future HTML versions of the
+body... filler filler filler filler filler filler filler filler filler.\n"
+            ],
+            'Text-only message, with text-only RFC822 attachment,
+            should have text body but not include attachment part' => [
+                __DIR__.'/mails/issue158c',
+                'text',
+                "An RFC822 forward of a PLAIN TEXT message with a plain-text body.\n"
+            ],
+            'Text-only message, with a text-only RFC822 attachment, message should have an empty HTML body' => [
+                __DIR__.'/mails/issue158c',
+                'html',
+                ''
+            ],
+            'Multipart email with both text and html body, with RFC822 attachment also with a text and html body' => [
+                __DIR__.'/mails/issue158d',
+                'text',
+                "This is the forward email send both emails will have both text and html variances available\n"
+            ],
+            'Multipart with both text and html body, RFC822 attachment also with text and html' => [
+                __DIR__.'/mails/issue158d',
+                'html',
+                '<html><body><div>This is the forward email send both
+emails will have both text and html
+variances available &nbsp;</div></body></html>'
+            ],
+        ];
     }
 }

@@ -73,12 +73,43 @@ namespace PhpMimeMailParser {
 
         /**
          * @expectedException        Exception
-         * @expectedExceptionMessage Invalid type specified for getMessageBody(). "type" can either be text or html.
+         * @expectedExceptionMessage setPath() or setText() or setStream() must be called before
+         */
+        public function testGetHeadersRaw()
+        {
+            $Parser = new Parser();
+            $Parser->getHeadersRaw();
+        }
+
+        /**
+         * @expectedException        Exception
+         * @expectedExceptionMessage Invalid type specified for getMessageBody(). Expected: text, html or htmlEmbeded.
          */
         public function testgetMessageBody()
         {
             $Parser = new Parser();
             $Parser->getMessageBody('azerty');
+        }
+
+        /**
+         * @expectedException        Exception
+         * @expectedExceptionMessage Invalid type specified for getInlineParts(). "type" can either be text or html.
+         */
+        public function testgetInlineParts()
+        {
+            $Parser = new Parser();
+            $Parser->getInlineParts('azerty');
+        }
+
+
+        /**
+         * @expectedException        Exception
+         * @expectedExceptionMessage You must not call MimeMailParser::setText with an empty string parameter
+         */
+        public function testSetText()
+        {
+            $Parser = new Parser();
+            $Parser->setText('');
         }
 
         /**
@@ -156,17 +187,41 @@ namespace PhpMimeMailParser {
         }
 
         /**
-         * @expectedException        PHPUnit_Framework_Error
+         * @expectedException        Exception
+         * @expectedExceptionMessage Could not create file for attachment: duplicate filename.
          */
-        public function testWrongCharset()
+        public function testSaveAttachmentsWithDuplicateNames()
         {
-            $mid = 'm0017';
-            $file = __DIR__.'/mails/'.$mid;
+            $mid = 'm0026';
+            $file = __DIR__ . '/mails/' . $mid;
+            $attach_dir = __DIR__ . '/mails/attach_' . $mid . '/';
 
             $Parser = new Parser();
-            $Parser->setStream(fopen($file, 'r'));
+            $Parser->setText(file_get_contents($file));
 
-            $text = $Parser->getMessageBody('text');
+            try {
+                $Parser->saveAttachments($attach_dir, false, Parser::ATTACHMENT_DUPLICATE_THROW);
+            } catch (Exception $e) {
+                // Clean up attachments dir
+                unlink($attach_dir . 'ATT00001.txt');
+                rmdir($attach_dir);
+
+                throw $e;
+            }
+        }
+
+        /**
+         * @expectedException        Exception
+         * @expectedExceptionMessage Invalid filename strategy argument provided.
+         */
+        public function testSaveAttachmentsInvalidStrategy()
+        {
+            $file = __DIR__ . '/mails/m0026';
+
+            $Parser = new Parser();
+            $Parser->setText(file_get_contents($file));
+
+            $Parser->saveAttachments('dir', false, 'InvalidValue');
         }
     }
 }
